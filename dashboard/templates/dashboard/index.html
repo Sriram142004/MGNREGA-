@@ -1,0 +1,219 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>MGNREGA Dashboard (3D)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.plot.ly/plotly-2.29.1.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r152/three.min.js"></script>
+
+  <style>
+    :root {
+      --accent: #00bcd4;
+      --glow: 0 0 10px var(--accent), 0 0 20px var(--accent), 0 0 40px var(--accent);
+    }
+
+    html, body { height: 100%; margin: 0; font-family: 'Inter', system-ui, sans-serif; overflow-x: hidden; }
+
+    body.light {
+      background: linear-gradient(180deg, #f3f9ff, #e6f7ff);
+      color: #0b2b3a;
+    }
+    body.dark {
+      background: linear-gradient(180deg, #000b1f, #001a2b);
+      color: #e6f7fb;
+    }
+
+    /* glowing cards */
+    .card {
+      transition: transform 0.3s ease, box-shadow 0.4s ease;
+    }
+    .card:hover {
+      transform: scale(1.03);
+      box-shadow: var(--glow);
+    }
+
+    /* glow buttons */
+    .theme-toggle, #langToggle {
+      border: 1px solid var(--accent);
+      background: transparent;
+      color: inherit;
+      border-radius: 8px;
+      transition: box-shadow 0.3s, transform 0.3s;
+    }
+    .theme-toggle:hover, #langToggle:hover {
+      box-shadow: var(--glow);
+      transform: scale(1.05);
+    }
+
+    /* glowing stat cards */
+    .stats-row .card:hover .stat-value {
+      text-shadow: 0 0 12px var(--accent), 0 0 30px var(--accent);
+    }
+
+    /* chart sizes */
+    .chart-card canvas, .chart-card #plotly-3d {
+      width: 100% !important;
+      height: 360px !important;
+    }
+    @media (max-width: 900px) {
+      .chart-card #plotly-3d { height: 320px !important; }
+    }
+
+    .debug { display: none; } /* hide debug box now */
+  </style>
+</head>
+<body>
+  <canvas id="bg-canvas" style="position:fixed; inset:0; z-index:10; pointer-events:none;"></canvas>
+
+  <nav class="navbar navbar-expand-lg" style="z-index:60;">
+    <div class="container-fluid">
+      <a class="navbar-brand fw-bold" href="#">MGNREGA Dashboard (UP)</a>
+      <div class="d-flex gap-2 align-items-center">
+        <button id="themeToggle" class="theme-toggle px-3 py-1">Theme</button>
+        <select id="langToggle" class="form-select form-select-sm" style="width:110px;">
+          <option value="en" selected>English</option>
+          <option value="hi">हिन्दी</option>
+        </select>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container container-top" style="position:relative; z-index:50;">
+    <div class="row mb-3 text-center">
+      <h1 id="titleMain" class="mb-0">District Performance Dashboard ✨</h1>
+      <p id="subtitle" class="subtle"></p>
+    </div>
+
+    <div class="row stats-row mb-4 gx-3 gy-3 text-center">
+      <div class="col-md-3"><div class="card p-3 chart-card"><div class="subtle">Total Districts</div><div class="stat-value" id="totalDistricts">0</div></div></div>
+      <div class="col-md-3"><div class="card p-3 chart-card"><div class="subtle">Total Workers</div><div class="stat-value" id="totalWorkers">0</div></div></div>
+      <div class="col-md-3"><div class="card p-3 chart-card"><div class="subtle">Total Job Days</div><div class="stat-value" id="totalJobDays">0</div></div></div>
+      <div class="col-md-3"><div class="card p-3 chart-card"><div class="subtle">Funds Spent (₹)</div><div class="stat-value" id="totalFunds">0</div></div></div>
+    </div>
+
+    <div class="chart-row mb-4 d-grid gap-3" style="grid-template-columns:1fr 1fr;">
+      <div class="card chart-card"><h5>Workers by District</h5><canvas id="workersChart"></canvas></div>
+      <div class="card chart-card"><h5>Funds Spent — 3D Bars (interactive)</h5><div id="plotly-3d"></div></div>
+    </div>
+
+    <div class="chart-row mb-5 d-grid gap-3" style="grid-template-columns:1fr 1fr;">
+      <div class="card chart-card"><h5>Funds Distribution (Donut)</h5><canvas id="fundsDonut"></canvas></div>
+      <div class="card chart-card"><h5>Workers Trend (Line)</h5><canvas id="workersLine"></canvas></div>
+    </div>
+
+    <div class="debug mb-4" id="debugBox"></div>
+  </main>
+
+  <script>
+    const districtNames = JSON.parse('{{ district_names_json|escapejs }}');
+    const workersData = JSON.parse('{{ workers_data_json|escapejs }}');
+    const fundsData = JSON.parse('{{ funds_data_json|escapejs }}');
+
+    function aggregateByDistrict(names, workers, funds) {
+      const map = {};
+      for (let i = 0; i < names.length; i++) {
+        const d = names[i] || 'Unknown';
+        if (!map[d]) map[d] = {workers:0, funds:0};
+        map[d].workers += Number(workers[i] || 0);
+        map[d].funds += Number(funds[i] || 0);
+      }
+      return map;
+    }
+
+    const agg = aggregateByDistrict(districtNames, workersData, fundsData);
+    const distinctDistricts = Object.keys(agg);
+    const aggWorkers = distinctDistricts.map(d => agg[d].workers);
+    const aggFunds = distinctDistricts.map(d => agg[d].funds);
+
+    // update cards
+    document.getElementById('totalDistricts').textContent = distinctDistricts.length;
+    document.getElementById('totalWorkers').textContent = aggWorkers.reduce((a,b)=>a+b,0);
+    document.getElementById('totalJobDays').textContent = '{{ total_job_days }}' || 0;
+    document.getElementById('totalFunds').textContent = Intl.NumberFormat('en-IN').format(aggFunds.reduce((a,b)=>a+b,0));
+
+    // workers bar
+    new Chart(document.getElementById('workersChart'), {
+      type: 'bar',
+      data: { labels: distinctDistricts, datasets: [{ label:'Workers', data:aggWorkers, backgroundColor:'rgba(0,188,212,0.7)', borderRadius:6 }] },
+      options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{y:{beginAtZero:true}} }
+    });
+
+    // donut
+    new Chart(document.getElementById('fundsDonut'), {
+      type: 'doughnut',
+      data: { labels: distinctDistricts, datasets: [{ data: aggFunds, backgroundColor:['#36a2eb','#ff6384','#ffcd56','#4bc0c0','#9966ff','#ff9f40'] }] },
+      options: { responsive:true, maintainAspectRatio:false, cutout:'60%', plugins:{legend:{position:'bottom'}} }
+    });
+
+    // line
+    new Chart(document.getElementById('workersLine'), {
+      type:'line',
+      data:{ labels:distinctDistricts, datasets:[{ data:aggWorkers, borderColor:'#00bcd4', fill:true, backgroundColor:'rgba(0,188,212,0.12)', tension:0.3 }] },
+      options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{y:{beginAtZero:true}} }
+    });
+
+    // ==== FIXED 3D BAR ====
+    const traces = [];
+    const colors = ['#00bcd4','#36a2eb','#4bc0c0','#9966ff','#ff9f40','#ff6384'];
+    for (let i=0;i<distinctDistricts.length;i++){
+      const h = Math.min(aggFunds[i], 1e9); // clamp to avoid out-of-bounds bars
+      const xi = i;
+      const w = 0.4;
+      const px = [xi-w, xi+w, xi+w, xi-w, xi-w, xi+w, xi+w, xi-w];
+      const py = [0,0,1,1,0,0,1,1];
+      const pz = [0,0,0,0,h,h,h,h];
+      traces.push({ type:'mesh3d', x:px, y:py, z:pz, opacity:0.9, color:colors[i%colors.length] });
+    }
+
+    const layout = {
+      margin:{l:0,r:0,b:0,t:0},
+      scene:{
+        aspectratio:{x:1,y:0.5,z:0.5},
+        xaxis:{title:'District', tickvals:distinctDistricts.map((d,i)=>i), ticktext:distinctDistricts, showgrid:false},
+        yaxis:{visible:false},
+        zaxis:{title:'Funds (₹)', tickformat:',', range:[0,Math.max(...aggFunds)*1.1]}
+      },
+      paper_bgcolor:'rgba(0,0,0,0)',
+      autosize:true
+    };
+    Plotly.newPlot('plotly-3d', traces, layout, {responsive:true, displayModeBar:false});
+
+    // theme
+    function applyTheme(t){
+      document.body.classList.remove('light','dark');
+      document.body.classList.add(t);
+    }
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    applyTheme(prefersDark?'dark':'light');
+    document.getElementById('themeToggle').onclick=()=>applyTheme(document.body.classList.contains('dark')?'light':'dark');
+
+    // background (three.js)
+    (function threeBG(){
+      const canvas=document.getElementById('bg-canvas');
+      const renderer=new THREE.WebGLRenderer({canvas,alpha:true});
+      const scene=new THREE.Scene();
+      const camera=new THREE.PerspectiveCamera(60,window.innerWidth/window.innerHeight,0.1,2000);
+      camera.position.z=40;
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(window.innerWidth,window.innerHeight);
+      const geom=new THREE.BufferGeometry();
+      const count=600, pos=new Float32Array(count*3);
+      for(let i=0;i<count*3;i++) pos[i]=(Math.random()-0.5)*120;
+      geom.setAttribute('position',new THREE.BufferAttribute(pos,3));
+      const mat=new THREE.PointsMaterial({color:0x00bcd4,size:1,transparent:true,opacity:0.6});
+      const points=new THREE.Points(geom,mat);
+      scene.add(points);
+      function animate(){ points.rotation.y+=0.001; renderer.render(scene,camera); requestAnimationFrame(animate);}
+      animate();
+      window.addEventListener('resize',()=>{camera.aspect=window.innerWidth/window.innerHeight;camera.updateProjectionMatrix();renderer.setSize(window.innerWidth,window.innerHeight);});
+    })();
+  </script>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
